@@ -13,7 +13,8 @@ browser and tap **Enter XR**.
 
 ## How to play
 
-1. Open the game in the Meta Quest browser and tap **Enter XR**.
+1. Open the game in the Meta Quest browser, tap **Enter XR**, then poke
+   **Start** on the board.
 2. Sit at a desk or table. The board lands on the nearest detected table
    (Quest room scan), or in front of you at desk height if none is found.
 3. **Pinch** a mirror from the tray, carry it over the grid and let go. A ring
@@ -21,13 +22,16 @@ browser and tap **Enter XR**.
 4. Steer the beam through every purple gem into the green receiver.
 5. **Poke** Next to continue or Reset to start the level over. Pinch the bar
    behind the board to slide it somewhere else.
+6. Solve a level with the fewest possible mirrors for a **Perfect ★**.
 
 No controllers needed. Everything is within a two-foot reach, and each level
 takes a minute or two. Progress is saved on the device.
 
 ## Design notes
 
-- **Hands-first:** near-field pinch grab for tiles, finger poke for buttons.
+- **Hands-first:** tiles are grabbed from the true pinch point (between
+  thumb and index tip, read from WebXR hand joints) so reaching across the
+  tray never grabs the wrong tile; finger poke for buttons.
 - **Seated:** the whole game fits on a desk in front of you.
 - **Passthrough with purpose:** the board snaps to your real table using
   plane detection, and sits in your room rather than in a virtual one.

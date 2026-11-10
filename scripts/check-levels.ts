@@ -61,9 +61,12 @@ LEVELS.forEach((level, i) => {
   if (!result) {
     console.log(`L${i + 1} ${level.name}: FAIL — unsolvable`);
     failed++;
+  } else if (result.mirrors !== level.par) {
+    console.log(`L${i + 1} ${level.name}: FAIL — par is ${level.par} but solver needs ${result.mirrors}`);
+    failed++;
   } else {
     console.log(
-      `L${i + 1} ${level.name}: ok, ${result.mirrors}/${level.tray.length} mirrors  ${result.layout.join(' ')}`,
+      `L${i + 1} ${level.name}: ok, par ${result.mirrors}/${level.tray.length} mirrors  ${result.layout.join(' ')}`,
     );
   }
 });

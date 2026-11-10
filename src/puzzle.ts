@@ -38,6 +38,8 @@ export interface Level {
   tray: MirrorKind[];
   /** Tutorial: a cell to highlight as the suggested drop spot. */
   teach?: Cell;
+  /** Fewest mirrors that solve the level (checked by scripts/check-levels.ts). */
+  par: number;
 }
 
 export const EAST: Dir = { dc: 1, dr: 0 };
@@ -123,6 +125,7 @@ export const LEVELS: Level[] = [
     blocks: [],
     fixed: [],
     tray: ['/'],
+    par: 1,
     teach: { c: 1, r: 1 },
   },
   {
@@ -136,6 +139,7 @@ export const LEVELS: Level[] = [
     blocks: [],
     fixed: [],
     tray: ['/', '\\'],
+    par: 1,
   },
   {
     name: 'Stairway',
@@ -152,6 +156,7 @@ export const LEVELS: Level[] = [
     ],
     fixed: [],
     tray: ['/', '/'],
+    par: 2,
   },
   {
     name: 'Gem Hunt',
@@ -164,6 +169,7 @@ export const LEVELS: Level[] = [
     blocks: [{ c: 1, r: 2 }],
     fixed: [],
     tray: ['\\', '/', '\\'],
+    par: 2,
   },
   {
     name: 'Borrowed Mirror',
@@ -179,6 +185,7 @@ export const LEVELS: Level[] = [
     ],
     fixed: [{ c: 1, r: 0, kind: '\\' }],
     tray: ['/', '\\', '/', '\\'],
+    par: 3,
   },
   {
     name: 'Switchback',
@@ -197,6 +204,7 @@ export const LEVELS: Level[] = [
     ],
     fixed: [],
     tray: ['/', '\\', '/', '\\', '/'],
+    par: 4,
   },
   {
     name: 'Crossroads',
@@ -216,6 +224,7 @@ export const LEVELS: Level[] = [
     ],
     fixed: [{ c: 3, r: 1, kind: '/' }],
     tray: ['/', '\\', '/', '\\', '/'],
+    par: 4,
   },
   {
     name: 'Prism Master',
@@ -236,5 +245,6 @@ export const LEVELS: Level[] = [
     ],
     fixed: [{ c: 5, r: 3, kind: '/' }],
     tray: ['/', '\\', '/', '\\', '/', '\\'],
+    par: 6,
   },
 ];

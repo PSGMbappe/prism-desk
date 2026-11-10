@@ -7,6 +7,8 @@ import {
   AdditiveBlending,
   Box3,
   BoxGeometry,
+  BufferAttribute,
+  BufferGeometry,
   Color,
   CylinderGeometry,
   createSystem,
@@ -19,6 +21,8 @@ import {
   type Object3D,
   OctahedronGeometry,
   OneHandGrabbable,
+  Points,
+  PointsMaterial,
   PokeInteractable,
   Pressed,
   RayInteractable,
@@ -49,13 +53,14 @@ const TILE = 0.054;
 const TRAY_GAP = 0.095;
 const BEAM_Y = 0.024;
 const MAX_BEAM_SEGMENTS = 24;
+const MAX_FLARES = 16;
+const SPARKS = 90;
 const PROGRESS_KEY = 'prism-desk-level';
 
 const KINDS: MirrorKind[] = ['/', '\\'];
 
 export class GameSystem extends createSystem({
   tiles: { required: [MirrorTile] },
-  heldTiles: { required: [MirrorTile, Grabbed] },
   buttons: { required: [DeskButton] },
   pressedButtons: { required: [DeskButton, Pressed] },
   handle: { required: [BoardHandle] },
@@ -74,8 +79,31 @@ export class GameSystem extends createSystem({
   private mats!: Record<string, MeshStandardMaterial | MeshBasicMaterial>;
   private geos!: Record<string, BoxGeometry | CylinderGeometry | OctahedronGeometry | RingGeometry | TorusGeometry>;
   private beamPool: Mesh[] = [];
+  private flarePool: Mesh[] = [];
+  private flareCount = 0;
   private highlight!: Mesh;
   private teachMarker!: Mesh;
+
+  // Solve celebration: a burst of sparks from the receiver.
+  private sparks!: Points;
+  private sparkPos!: Float32Array;
+  private sparkVel!: Float32Array;
+  private sparkStart = -1;
+  private solveTime = -1;
+
+  // Flow and feedback
+  private mode: 'title' | 'play' = 'title';
+  private paused = false;
+  private solveMirrors = 0;
+  private now = 0;
+  private popTimes = new Map<Entity, number>();
+
+  // Pinch grabbing for tiles. The SDK's near grab measures from the palm,
+  // which picks the neighbouring tile when a hand reaches across the tray, so
+  // tiles are grabbed from the true pinch point (between thumb and index tip).
+  private held: Record<'left' | 'right', Entity | null> = { left: null, right: null };
+  private heldOffset = { left: new Vector3(), right: new Vector3() };
+  private pinch = new Vector3();
 
   // Level state
   private levelIndex = 0;
@@ -121,9 +149,39 @@ export class GameSystem extends createSystem({
       const m = new Mesh(this.geos.beam, this.mats.beam);
       m.visible = false;
       m.renderOrder = 5;
+      // Soft outer glow; inherits the core's length via scale.x.
+      const glow = new Mesh(this.geos.beamGlow, this.mats.beamGlow);
+      glow.renderOrder = 4;
+      m.add(glow);
       this.root.add(m);
       this.beamPool.push(m);
     }
+    for (let i = 0; i < MAX_FLARES; i++) {
+      const f = new Mesh(this.geos.flare, this.mats.flare);
+      f.visible = false;
+      f.renderOrder = 6;
+      this.root.add(f);
+      this.flarePool.push(f);
+    }
+
+    this.sparkPos = new Float32Array(SPARKS * 3);
+    this.sparkVel = new Float32Array(SPARKS * 3);
+    const sparkGeo = new BufferGeometry();
+    sparkGeo.setAttribute('position', new BufferAttribute(this.sparkPos, 3));
+    this.sparks = new Points(
+      sparkGeo,
+      new PointsMaterial({
+        color: 0xb6ffde,
+        size: 0.009,
+        transparent: true,
+        opacity: 0,
+        blending: AdditiveBlending,
+        depthWrite: false,
+      }),
+    );
+    this.sparks.frustumCulled = false;
+    this.sparks.visible = false;
+    this.root.add(this.sparks);
     this.highlight = new Mesh(this.geos.ring, this.mats.highlight);
     this.highlight.rotation.x = -Math.PI / 2;
     this.highlight.visible = false;
@@ -135,16 +193,8 @@ export class GameSystem extends createSystem({
 
     this.createHandle();
 
-    let saved = 0;
-    try {
-      saved = Number(localStorage.getItem(PROGRESS_KEY) ?? 0) || 0;
-    } catch {
-      saved = 0;
-    }
-    this.loadLevel(Math.min(Math.max(saved, 0), LEVELS.length - 1));
+    this.showTitle();
 
-    this.queries.heldTiles.subscribe('qualify', (e) => this.onPick(e));
-    this.queries.heldTiles.subscribe('disqualify', (e) => this.onDrop(e));
     this.queries.pressedButtons.subscribe('qualify', (e) =>
       this.onButton(e.getValue(DeskButton, 'action') as string),
     );
@@ -161,6 +211,9 @@ export class GameSystem extends createSystem({
           this.placedOnTable = false;
           this.placementDeadline = -1;
         }
+        // Headset off or system menu open: say so, and resume where we were.
+        this.paused = state === VisibilityState.VisibleBlurred;
+        this.refreshLabel();
       }),
     );
   }
@@ -200,6 +253,21 @@ export class GameSystem extends createSystem({
         blending: AdditiveBlending,
         depthWrite: false,
       }),
+      beamGlow: new MeshBasicMaterial({
+        color: 0xffb347,
+        transparent: true,
+        opacity: 0.22,
+        blending: AdditiveBlending,
+        depthWrite: false,
+      }),
+      flare: new MeshBasicMaterial({
+        color: 0xfff3c4,
+        transparent: true,
+        opacity: 0.8,
+        blending: AdditiveBlending,
+        depthWrite: false,
+      }),
+      tileHeld: std(0xf4fbff, { emissive: new Color(0x3fc8ff), emissiveIntensity: 0.9, roughness: 0.3 }),
       highlight: new MeshBasicMaterial({ color: 0x7fffb0, transparent: true, opacity: 0.85, depthWrite: false }),
       teach: new MeshBasicMaterial({ color: 0x7fe8ff, transparent: true, opacity: 0.8, depthWrite: false }),
     };
@@ -213,6 +281,8 @@ export class GameSystem extends createSystem({
       gem: new OctahedronGeometry(0.017, 0),
       receiver: new TorusGeometry(0.019, 0.007, 10, 24),
       beam: new BoxGeometry(1, 0.006, 0.006),
+      beamGlow: new BoxGeometry(1, 0.018, 0.018),
+      flare: new OctahedronGeometry(0.011, 1),
       ring: new RingGeometry(S * 0.36, S * 0.46, 32),
       handle: new CylinderGeometry(0.012, 0.012, 0.12, 16),
       button: new CylinderGeometry(0.018, 0.02, 0.014, 24),
@@ -260,6 +330,8 @@ export class GameSystem extends createSystem({
       if (e.active) e.dispose({ disposeResources: false });
     }
     this.levelEntities = [];
+    this.held.left = null;
+    this.held.right = null;
     this.nextButton = null;
     this.tileTargets.clear();
     this.gemMeshes.clear();
@@ -267,9 +339,28 @@ export class GameSystem extends createSystem({
     this.placed.clear();
   }
 
-  private loadLevel(index: number): void {
+  private savedLevel(): number {
+    let saved = 0;
+    try {
+      saved = Number(localStorage.getItem(PROGRESS_KEY) ?? 0) || 0;
+    } catch {
+      saved = 0;
+    }
+    return Math.min(Math.max(saved, 0), LEVELS.length - 1);
+  }
+
+  /** Title card: the next level's board as a preview, plus a Start button. */
+  private showTitle(): void {
+    this.mode = 'title';
+    this.loadLevel(this.savedLevel(), true);
+  }
+
+  private loadLevel(index: number, title = false): void {
     this.clearLevel();
+    this.mode = title ? 'title' : 'play';
     this.levelIndex = index;
+    this.solveTime = -1;
+    this.sparks.visible = false;
     this.level = LEVELS[index];
     this.solved = false;
     this.litGemsLast = 0;
@@ -323,39 +414,46 @@ export class GameSystem extends createSystem({
     const horizontal = L.receiver.c < 0 || L.receiver.c >= L.cols;
     this.receiverMesh.rotation.y = horizontal ? Math.PI / 2 : 0;
 
+    const bx = slabW / 2 + 0.04;
+    const tz = this.trayPos(0, this.v1).z;
+    if (title) {
+      const start = this.createButton('start', 'Start', 0, tz, 'button');
+      start.object3D!.scale.setScalar(1.6);
+      this.levelEntities.push(start);
+    }
+
     // Tray tiles the player can pick up.
-    L.tray.forEach((kind, slot) => {
+    if (!title) L.tray.forEach((kind, slot) => {
       const visual = this.buildTileVisual(kind, false);
       visual.name = `Mirror ${kind === '/' ? 'Slash' : 'Backslash'} ${slot + 1}`;
       this.trayPos(slot, visual.position);
       const entity = this.world.createTransformEntity(visual, { parent: this.rootEntity });
       entity.addComponent(MirrorTile, { kind: KINDS.indexOf(kind), slot, cellC: -1, cellR: -1 });
-      entity.addComponent(OneHandGrabbable, { rotate: false, translate: true });
       this.tileTargets.set(entity, visual.position.clone());
       this.levelEntities.push(entity);
     });
 
     // Reset sits right of the tray, Next on the far left, so a finger
     // reaching for one never sweeps through the other.
-    const bx = slabW / 2 + 0.04;
-    const tz = this.trayPos(0, this.v1).z;
-    this.levelEntities.push(this.createButton('reset', 'Reset', bx, tz, 'buttonAlt'));
-    this.nextButton = this.createButton(
-      'next',
-      index === LEVELS.length - 1 ? 'Again' : 'Next',
-      -bx,
-      tz,
-      'button',
-    );
-    this.nextButton.object3D!.visible = false;
-    this.levelEntities.push(this.nextButton);
+    if (!title) {
+      this.levelEntities.push(this.createButton('reset', 'Reset', bx, tz, 'buttonAlt'));
+      this.nextButton = this.createButton(
+        'next',
+        index === LEVELS.length - 1 ? 'Again' : 'Next',
+        -bx,
+        tz,
+        'button',
+      );
+      this.nextButton.object3D!.visible = false;
+      this.levelEntities.push(this.nextButton);
+    }
 
     // Status label floats behind the far edge, facing the player.
     this.label.mesh.position.set(0, 0.075, -d / 2 - 0.01);
     this.label.mesh.rotation.x = -0.25;
-    this.label.set(`${index + 1}/${LEVELS.length} · ${L.name}`, L.hint);
+    this.refreshLabel();
 
-    if (L.teach) {
+    if (L.teach && !title) {
       this.cellPos(L.teach.c, L.teach.r, 0.006, this.teachMarker.position);
       this.teachMarker.visible = true;
     } else {
@@ -397,9 +495,68 @@ export class GameSystem extends createSystem({
 
   // ---------------------------------------------------------- interaction
 
+  /** World-space pinch point of a hand (or grip of a controller). */
+  private pinchPoint(hand: 'left' | 'right', out: Vector3): boolean {
+    const session = this.xrManager.getSession();
+    const frame = this.xrFrame;
+    const ref = this.xrManager.getReferenceSpace();
+    if (session && frame && ref) {
+      for (const src of session.inputSources) {
+        if (src.handedness !== hand || !src.hand || !frame.getJointPose) continue;
+        const thumb = src.hand.get('thumb-tip');
+        const index = src.hand.get('index-finger-tip');
+        const a = thumb && frame.getJointPose(thumb, ref);
+        const b = index && frame.getJointPose(index, ref);
+        if (a && b) {
+          out.set(
+            (a.transform.position.x + b.transform.position.x) / 2,
+            (a.transform.position.y + b.transform.position.y) / 2,
+            (a.transform.position.z + b.transform.position.z) / 2,
+          );
+          this.player.localToWorld(out);
+          return true;
+        }
+      }
+    }
+    this.player.gripSpaces[hand].getWorldPosition(out);
+    return true;
+  }
+
+  private isHeld(e: Entity): boolean {
+    return this.held.left === e || this.held.right === e;
+  }
+
+  private tryGrab(hand: 'left' | 'right'): void {
+    if (this.mode !== 'play' || !this.pinchPoint(hand, this.pinch)) return;
+    let best: Entity | null = null;
+    let bestDist = 0.065; // must pinch within 6.5 cm of a tile
+    for (const e of this.queries.tiles.entities) {
+      const obj = e.object3D;
+      if (!obj || this.isHeld(e)) continue;
+      obj.getWorldPosition(this.v1);
+      this.v1.y += 0.02; // tile centre, not its base
+      const d = this.v1.distanceTo(this.pinch);
+      if (d < bestDist) {
+        bestDist = d;
+        best = e;
+      }
+    }
+    if (!best?.object3D) return;
+    this.held[hand] = best;
+    this.root.worldToLocal(this.v2.copy(this.pinch));
+    this.heldOffset[hand].copy(best.object3D.position).sub(this.v2);
+    this.onPick(best);
+  }
+
+  private release(hand: 'left' | 'right'): void {
+    const e = this.held[hand];
+    if (!e) return;
+    this.held[hand] = null;
+    this.onDrop(e);
+  }
+
   private onPick(e: Entity): void {
     sfx.unlock();
-    if (e.hasComponent(BoardHandle)) return;
     const c = e.getValue(MirrorTile, 'cellC') as number;
     const r = e.getValue(MirrorTile, 'cellR') as number;
     if (c >= 0) {
@@ -408,7 +565,13 @@ export class GameSystem extends createSystem({
       e.setValue(MirrorTile, 'cellR', -1);
       this.retrace();
     }
+    this.setTileBase(e, this.mats.tileHeld);
     sfx.pick();
+  }
+
+  private setTileBase(e: Entity, mat: MeshStandardMaterial | MeshBasicMaterial): void {
+    const base = e.object3D?.children[0] as Mesh | undefined;
+    if (base) base.material = mat;
   }
 
   /** Nearest open cell under a tile, or null if it is not over the grid. */
@@ -435,6 +598,7 @@ export class GameSystem extends createSystem({
     // Put the tile back under the board in case grabbing re-parented it.
     if (obj.parent !== this.root) this.root.attach(obj);
     obj.rotation.set(0, 0, 0);
+    this.setTileBase(e, this.mats.tile);
     const target = this.tileTargets.get(e);
     if (!target) return;
     if (this.dropCell(obj, this.dropTmp)) {
@@ -445,6 +609,7 @@ export class GameSystem extends createSystem({
       e.setValue(MirrorTile, 'cellR', r);
       this.cellPos(c, r, 0.005, target);
       sfx.place();
+      this.popTimes.set(e, this.now);
       if (this.level.teach) this.teachMarker.visible = false;
       this.retrace();
     } else {
@@ -455,7 +620,10 @@ export class GameSystem extends createSystem({
 
   private onButton(action: string): void {
     sfx.button();
-    if (action === 'reset') {
+    if (action === 'start') {
+      sfx.unlock();
+      this.loadLevel(this.levelIndex);
+    } else if (action === 'reset') {
       this.loadLevel(this.levelIndex);
     } else if (action === 'next' && this.solved) {
       this.loadLevel((this.levelIndex + 1) % LEVELS.length);
@@ -490,6 +658,25 @@ export class GameSystem extends createSystem({
     }
     for (let i = seg; i < MAX_BEAM_SEGMENTS; i++) this.beamPool[i].visible = false;
 
+    // Flares where the beam leaves the emitter and wherever it bends.
+    let f = 0;
+    for (let i = 0; i < path.length - 1 && f < MAX_FLARES; i++) {
+      const bend =
+        i === 0 ||
+        path[i + 1].c - path[i].c !== path[i].c - path[i - 1].c ||
+        path[i + 1].r - path[i].r !== path[i].r - path[i - 1].r;
+      if (!bend) continue;
+      const flare = this.flarePool[f++];
+      this.cellPos(path[i].c, path[i].r, BEAM_Y, flare.position);
+      if (i === 0) {
+        flare.position.x += this.level.emitter.dir.dc * S * 0.62;
+        flare.position.z += this.level.emitter.dir.dr * S * 0.62;
+      }
+      flare.visible = true;
+    }
+    this.flareCount = f;
+    for (let i = f; i < MAX_FLARES; i++) this.flarePool[i].visible = false;
+
     // Gems and receiver glow.
     const lit = new Set<string>();
     for (const p of path) lit.add(cellKey(p.c, p.r));
@@ -500,16 +687,14 @@ export class GameSystem extends createSystem({
     this.litGemsLast = this.trace.litGems;
     this.receiverMesh.material = this.trace.solved ? this.mats.receiverLit : this.mats.receiver;
 
-    if (this.trace.solved && !this.solved) {
+    if (this.trace.solved && !this.solved && this.mode === 'play') {
       this.solved = true;
+      this.solveMirrors = this.placed.size;
+      this.solveTime = this.now;
+      this.burstSparks();
       sfx.solved();
-      const last = this.levelIndex === LEVELS.length - 1;
-      this.label.set(
-        last ? 'You mastered every prism!' : 'Solved!',
-        last ? 'Poke Again to replay from level 1' : 'Poke Next for the next puzzle',
-        '#3ddc97',
-      );
       if (this.nextButton?.object3D) this.nextButton.object3D.visible = true;
+      const last = this.levelIndex === LEVELS.length - 1;
       try {
         localStorage.setItem(PROGRESS_KEY, String(last ? 0 : this.levelIndex + 1));
       } catch {
@@ -517,9 +702,57 @@ export class GameSystem extends createSystem({
       }
     } else if (!this.trace.solved && this.solved) {
       this.solved = false;
-      this.label.set(`${this.levelIndex + 1}/${LEVELS.length} · ${this.level.name}`, this.level.hint);
+      this.solveTime = -1;
       if (this.nextButton?.object3D) this.nextButton.object3D.visible = false;
     }
+    this.refreshLabel();
+  }
+
+  /** One place decides what the floating label says. */
+  private refreshLabel(): void {
+    if (!this.level) return;
+    const L = this.level;
+    const n = this.levelIndex + 1;
+    if (this.paused) {
+      this.label.set('Paused', 'Your puzzle is waiting right where you left it', '#ffc857');
+    } else if (this.mode === 'title') {
+      this.label.set(
+        'PRISM DESK',
+        n === 1 ? 'Bend light with your hands · Poke Start' : `Continue at level ${n} of ${LEVELS.length} · Poke Start`,
+        '#ffc857',
+      );
+    } else if (this.solved) {
+      const last = this.levelIndex === LEVELS.length - 1;
+      const perfect = this.solveMirrors <= L.par;
+      const next = last ? 'Poke Again to replay' : 'Poke Next';
+      this.label.set(
+        last ? 'You mastered every prism!' : perfect ? 'Perfect! ★' : 'Solved!',
+        perfect
+          ? `Fewest mirrors possible · ${next}`
+          : `${this.solveMirrors} mirrors · can you do it with ${L.par}? · ${next}`,
+        '#3ddc97',
+      );
+    } else {
+      this.label.set(`${n}/${LEVELS.length} · ${L.name}`, L.hint);
+    }
+  }
+
+  private burstSparks(): void {
+    const origin = this.receiverMesh.position;
+    for (let i = 0; i < SPARKS; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const up = 0.25 + Math.random() * 0.45;
+      const speed = 0.12 + Math.random() * 0.22;
+      this.sparkPos[i * 3] = origin.x;
+      this.sparkPos[i * 3 + 1] = origin.y;
+      this.sparkPos[i * 3 + 2] = origin.z;
+      this.sparkVel[i * 3] = Math.cos(a) * speed * (1 - up);
+      this.sparkVel[i * 3 + 1] = up * 0.9;
+      this.sparkVel[i * 3 + 2] = Math.sin(a) * speed * (1 - up);
+    }
+    this.sparks.geometry.attributes.position.needsUpdate = true;
+    this.sparks.visible = true;
+    this.sparkStart = this.now;
   }
 
   // ------------------------------------------------------------ placement
@@ -604,7 +837,8 @@ export class GameSystem extends createSystem({
     return true;
   }
 
-  update(_delta: number, time: number): void {
+  update(delta: number, time: number): void {
+    this.now = time;
     // Board placement when entering mixed reality.
     if (this.placementDeadline === -2) {
       this.placeInFrontOfPlayer();
@@ -634,12 +868,24 @@ export class GameSystem extends createSystem({
       }
     }
 
+    // Pinch to pick up, follow the pinch point, release to drop.
+    for (const hand of ['left', 'right'] as const) {
+      const select = this.input.xr.getSelectState(hand);
+      if (select.start) this.tryGrab(hand);
+      const e = this.held[hand];
+      if (e?.object3D && e.active && this.pinchPoint(hand, this.pinch)) {
+        this.root.worldToLocal(this.pinch);
+        e.object3D.position.copy(this.pinch).add(this.heldOffset[hand]);
+      }
+      if (select.end || (e && !select.active)) this.release(hand);
+    }
+
     // Ease tiles toward their resting spot; preview the drop cell.
     let showHighlight = false;
     for (const e of this.queries.tiles.entities) {
       const obj = e.object3D;
       if (!obj) continue;
-      if (e.hasComponent(Grabbed)) {
+      if (this.isHeld(e)) {
         if (!showHighlight && this.dropCell(obj, this.dropTmp)) {
           this.cellPos(this.dropTmp.c, this.dropTmp.r, 0.007, this.highlight.position);
           showHighlight = true;
@@ -648,6 +894,17 @@ export class GameSystem extends createSystem({
       }
       const target = this.tileTargets.get(e);
       if (target && obj.parent === this.root) obj.position.lerp(target, 0.25);
+      // Little pop when a tile snaps into the grid.
+      const popAt = this.popTimes.get(e);
+      if (popAt !== undefined) {
+        const t = time - popAt;
+        if (t > 0.35) {
+          obj.scale.setScalar(1);
+          this.popTimes.delete(e);
+        } else {
+          obj.scale.setScalar(1 + 0.22 * Math.sin((t / 0.35) * Math.PI));
+        }
+      }
     }
     this.highlight.visible = showHighlight;
 
@@ -656,6 +913,34 @@ export class GameSystem extends createSystem({
     (this.mats.beam as MeshBasicMaterial).opacity = 0.7 + 0.25 * Math.sin(time * 10);
     (this.mats.teach as MeshBasicMaterial).opacity = 0.35 + 0.45 * pulse;
     for (const m of this.gemMeshes.values()) m.rotation.y = time * 1.2;
-    if (this.solved) this.receiverMesh.rotation.z = time * 2;
+    for (let i = 0; i < this.flareCount; i++) {
+      this.flarePool[i].scale.setScalar(0.8 + 0.35 * Math.sin(time * 9 + i * 1.7));
+      this.flarePool[i].rotation.y = time * 2 + i;
+    }
+    if (this.solved) {
+      this.receiverMesh.rotation.z = time * 2;
+      const t = time - this.solveTime;
+      this.receiverMesh.scale.setScalar(1 + 0.6 * Math.exp(-t * 4) + 0.06 * Math.sin(time * 5));
+    } else if (this.receiverMesh) {
+      this.receiverMesh.scale.setScalar(1);
+    }
+
+    // Spark burst: simple ballistic particles that fade out over 1.4 s.
+    if (this.sparks.visible) {
+      const t = time - this.sparkStart;
+      if (t > 1.4) {
+        this.sparks.visible = false;
+      } else {
+        const dt = Math.min(delta, 0.05);
+        for (let i = 0; i < SPARKS; i++) {
+          this.sparkVel[i * 3 + 1] -= 1.6 * dt;
+          this.sparkPos[i * 3] += this.sparkVel[i * 3] * dt;
+          this.sparkPos[i * 3 + 1] = Math.max(0.004, this.sparkPos[i * 3 + 1] + this.sparkVel[i * 3 + 1] * dt);
+          this.sparkPos[i * 3 + 2] += this.sparkVel[i * 3 + 2] * dt;
+        }
+        this.sparks.geometry.attributes.position.needsUpdate = true;
+        (this.sparks.material as PointsMaterial).opacity = Math.max(0, 1 - t / 1.4);
+      }
+    }
   }
 }

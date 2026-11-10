@@ -44,7 +44,7 @@ for (let attempt = 0; attempt < 20000; attempt++) {
   const blocks = Array.from({ length: nBlocks }, cell);
   const fixed = Array.from({ length: nFixed }, () => ({ ...cell(), kind: pick<MirrorKind>(['/', '\\']) }));
   const tray = Array.from({ length: nTray }, (_, i) => (i % 2 ? '\\' : '/') as MirrorKind);
-  const level: Level = { name: '', hint: '', cols, rows, emitter: { c: e.c, r: e.r, dir: e.inward }, receiver: { c: rc.c, r: rc.r }, gems, blocks, fixed, tray };
+  const level: Level = { name: '', hint: '', cols, rows, emitter: { c: e.c, r: e.r, dir: e.inward }, receiver: { c: rc.c, r: rc.r }, gems, blocks, fixed, tray, par: 0 };
   if (traceBeam(level, new Map()).solved) continue;
   const res = solveMin(level);
   if (res < 0) continue;
