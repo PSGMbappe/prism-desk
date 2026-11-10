@@ -8,6 +8,9 @@ Built with the [Immersive Web SDK](https://github.com/facebook/immersive-web-sdk
 (WebXR) for the Meta VR Start Developer Competition 2026: Gaming track,
 New Experience division.
 
+**Play it:** open https://psgmbappe.github.io/prism-desk/ in the Meta Quest
+browser and tap **Enter XR**.
+
 ## How to play
 
 1. Open the game in the Meta Quest browser and tap **Enter XR**.
@@ -41,6 +44,7 @@ npm run dev            # IWSDK dev server with the Quest emulator (IWER)
 npm run typecheck
 npm run check:levels   # prove every level is solvable
 npm run build          # static site in dist/
+npm run deploy         # build and publish to GitHub Pages (gh-pages branch)
 ```
 
 Puzzle logic lives in `src/puzzle.ts` (pure, testable); the ECS game system
