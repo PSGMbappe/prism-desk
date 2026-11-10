@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "build": "vite build",
     "preview": "vite preview",
-    "check:levels": "node scripts/check-levels.ts"
+    "check:levels": "node scripts/check-levels.ts",
+    "deploy": "bash scripts/deploy.sh"
   },
   "dependencies": {
     "@iwsdk/core": "1.1.0-rc.2",
