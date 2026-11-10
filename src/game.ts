@@ -449,7 +449,7 @@ export class GameSystem extends createSystem({
     }
 
     // Status label floats behind the far edge, facing the player.
-    this.label.mesh.position.set(0, 0.075, -d / 2 - 0.01);
+    this.label.mesh.position.set(0, 0.105, -d / 2 - 0.045);
     this.label.mesh.rotation.x = -0.25;
     this.refreshLabel();
 

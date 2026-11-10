@@ -43,3 +43,5 @@ pids/
 .cursor/mcp.json
 .vscode/mcp.json
 .codex/config.toml
+video/frames/
+video/out/

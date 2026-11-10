@@ -32,6 +32,6 @@
     }
   },
   "dev": {
-    "emulator": { "device": "metaQuest3", "environment": "sunlit_living_room" }
+    "emulator": { "device": "metaQuest3", "environment": "home_office" }
   }
 }
